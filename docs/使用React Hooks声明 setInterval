@@ -1,0 +1,121 @@
+# 使用 React Hooks 声明 setInterval
+
+## 一个useEffect的Bug <a href="#hcjdw" id="hcjdw"></a>
+
+在使用hooks实现setInterval时，出现了一个bug：
+
+```javascript
+import React, { useState, useEffect, useRef } from "react";
+import ReactDOM from "react-dom";
+
+function Counter() {
+  const [count, setCount] = useState(0);
+  const [text, setText] = useState('')
+  
+  useEffect(() => {
+    let id = setInterval(() => {
+      setCount(count + 1);
+    }, 1000);
+    return () => clearInterval(id);
+  });
+  
+  return <>
+    <h1>{count}</h1>
+    <button onClick={() => { setText(text+'a') }}>click</button>
+    <span>{text}</span>
+  </>
+}
+
+const rootElement = document.getElementById("root");
+ReactDOM.render(<Counter />, rootElement);
+```
+
+当点击button时，timer会停止增长，如果你快速点击的话，计时器就完全停住了。
+
+这个问题产生的原因是，useEffect会在每次重新渲染时执行，当我们快速点击的时候相当于计时器在不停     的清除上一个，然后重新新增。为了解决这个问题，我们给useEffect添加 _\[]_ 作为依赖。
+
+为了解决这个问题，我们给useEffect添加 _\[]_ 作为依赖。
+
+但是，现在我们的计时器更新到 1 就不动了。（[查看真实 bug](https://codesandbox.io/s/jj0mk6y683)。）
+
+发生了什么？！
+
+**问题在于，useEffect 在第一次渲染时获取值为 0 的 count**，我们不再重执行 effect，所以 setInterval 一直引用第一次渲染时的闭包 count，以至于 count + 1 一直是 1。哎呀呀！
+
+## Fix it！ <a href="#xjpsk" id="xjpsk"></a>
+
+修复它的[一种方法](https://codesandbox.io/s/j379jxrzjy)是用像 setCount(c => c + 1) 这样的 「updater」替换 setCount(count + 1)，这样可以读到新 state 变量。但这个无法帮助你获取到新的 props。
+
+[另一个方法](https://codesandbox.io/s/00o9o95jyv)是用 [useReducer()](https://reactjs.org/docs/hooks-reference.html#usereducer)。这种方法为你提供了更大的灵活性。在 reducer 中，你可以访问到当前 state 和新的 props。dispatch 方法本身永远不会改变，所以你可以从任何闭包中将数据放入其中。useReducer() 有个约束是你不可以用它执行副作用。（但是，你可以返回新状态 —— 触发一些 effect。）
+
+## 深层次的分析 <a href="#gcvjn" id="gcvjn"></a>
+
+Dan 把这个问题出现的原因总结为：React 编程模型和命令式 setInterval API 之间 的抗阻不匹配。
+
+React 组件中的 props 和 state 是可以改变的， React 会重渲染它们且「丢弃」任何关于上一次渲染的结果，它们之间不再有相关性。
+
+useEffect() Hook 也「丢弃」上一次渲染结果，它会清除上一次 effect 再建立下一个 effect，下一个 effect 锁住新的 props 和 state，这也是我们[第一次尝试](https://codesandbox.io/s/7wlxk1k87j)简单示例可以正确工作的原因。
+
+**但 setInterval 不会「丢弃」。** 它会一直引用老的 props 和 state 直到你把它换掉 —— 不重置时间你是无法做到的。
+
+## 使用Ref <a href="#dvif6" id="dvif6"></a>
+
+Dan 给出了一个使用useRef的方法，将每次setInterval的callback存在ref这个“盒子”里面。
+
+```javascript
+function Counter() {
+  const [count, setCount] = useState(0);
+  const savedCallback = useRef();
+
+  function callback() {
+    setCount(count + 1);
+  }
+
+  useEffect(() => {
+    savedCallback.current = callback;
+  });
+
+  useEffect(() => {
+    function tick() {
+      savedCallback.current();
+    }
+
+    let id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return <h1>{count}</h1>;
+}
+```
+
+第一个useEffect的作用就相当于，每次setCount的时候，将ref里的callback重置为最新的（读取最新的state和props），这样的话setInterval执行的时候执行的就是ref里最新的那个回调函数了。
+
+其实我在想，如果我们直接用Ref来保存count的值，这样实现是否会简单一些。
+
+```javascript
+import React, { useState, useEffect, useRef } from "react";
+import ReactDOM from "react-dom";
+
+function Counter() {
+  const count = useRef(0);
+  const [reload, setReload] = useState()
+  const [, setText] = useState('')
+
+  useEffect(() => {
+    let id = setInterval(() => {
+      count.current += 1
+      setReload()
+    }, 1000);
+    return () => clearInterval(id);
+  },[]);
+
+  return <h1>{count.current}<span><button onClick={() => {
+    setText(text+'a')
+  }}>click</button>{text}</span></h1>;
+}
+
+const rootElement = document.getElementById("root");
+ReactDOM.render(<Counter />, rootElement);
+```
+
+总而言之，在使用hooks的时候要格外注意闭包的问题。
